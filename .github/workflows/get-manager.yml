@@ -82,6 +82,24 @@ jobs:
           elif [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ]; then
             echo "This is the ReSukiSU variant"
             git clone https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+          elif [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU(34943)" ]; then
+            echo "This is the ReSukiSU(34943) variant"
+            git clone https://github.com/ReSukiSU/ReSukiSU.git KernelSU
+            # rev-list count = 34943 - 30700 = 4243 (ReSukiSU 公式: 30700 + git rev-list --count HEAD)
+            # 定位到 rev-list count = 4243 的 commit。如果 HEAD 计数变动，则用二分回退。
+            KSU_TARGET_VERSION=34943
+            TARGET_COUNT=$((KSU_TARGET_VERSION - 30700))
+            HEAD_COUNT=$(git -C KernelSU rev-list --count HEAD)
+            if [ "$HEAD_COUNT" -gt "$TARGET_COUNT" ]; then
+              BACKOFF=$((HEAD_COUNT - TARGET_COUNT))
+              TARGET_SHA=$(git -C KernelSU rev-list --max-count=1 --skip="$BACKOFF" HEAD)
+              if [ -n "$TARGET_SHA" ]; then
+                echo "ReSukiSU(34943): reset HEAD count $HEAD_COUNT -> $TARGET_COUNT (commit $TARGET_SHA)"
+                git -C KernelSU checkout "$TARGET_SHA"
+              else
+                echo "警告: 无法通过 --skip 定位到 ReSukiSU 34943 对应 commit，将使用当前 HEAD 继续编译"
+              fi
+            fi
           elif [ "${{ inputs.kernelsu_variant }}" == "Official" ]; then
             echo "This is the Official"
             git clone https://github.com/tiann/KernelSU.git KernelSU
@@ -103,6 +121,8 @@ jobs:
             KSU_VERSION=40548
           elif [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ]; then
             KSU_VERSION=$((30700 + KSU_GIT_VERSION))
+          elif [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU(34943)" ]; then
+            KSU_VERSION=34943
           elif [ "${{ inputs.kernelsu_variant }}" == "Official" ]; then
             KSU_VERSION=$((20000 + KSU_GIT_VERSION))
           elif [ "${{ inputs.kernelsu_variant }}" == "Next" ]; then
@@ -133,6 +153,35 @@ jobs:
           case "${{ inputs.kernelsu_variant }}" in
             "SukiSU(40726)") LEGACY_RELEASE_TAG="v2.1.0-r2"; LEGACY_DIR="SukiSU_40726" ;;
             "SukiSU(40548)") LEGACY_RELEASE_TAG="v2.0.0-r34"; LEGACY_DIR="SukiSU_40548" ;;
+            "ReSukiSU(34943)")
+              # 直接从社区 CI 镜像 cctv18/ReSukiSU_CI 下 ReSukiSU v4.1.0_34943 的稳定 APK
+              echo "下载 ReSukiSU(34943) 管理器..."
+              mkdir -p "manager-artifacts/ReSukiSU_34943"
+              # tag = ReSukiSU_28352431503 对应 v34993，但我们要 34943 这个快照。优先搜索最新 <= 34943 的 release。
+              # 如找不到，则从固定的 v4.1.0_34993 回退（KSU 管理器向下兼容，不高于内核侧版本号即可匹配运行）。
+              MANAGER_URL=""
+              RELEASES=$(curl -fsSL "https://api.github.com/repos/cctv18/ReSukiSU_CI/releases?per_page=30" || true)
+              if [ -n "$RELEASES" ]; then
+                MANAGER_URL=$(printf '%s' "$RELEASES" | jq -r '
+                  [.[] | select(.tag_name | startswith("ReSukiSU_"))] |
+                  [.[] | select(.name | test("^v3[0-9]{4}$"))] |
+                  [.[] | select((.name | ltrimstr("v") | tonumber) <= 34943)] |
+                  sort_by(.name | ltrimstr("v") | tonumber) |
+                  last |
+                  .assets[]? | select(.name | test("ReSukiSU_v.*-arm64-v8a-release\\.apk")) |
+                  .browser_download_url
+                ' 2>/dev/null | head -n 1)
+              fi
+              if [ -z "$MANAGER_URL" ]; then
+                MANAGER_URL="https://github.com/cctv18/ReSukiSU_CI/releases/download/ReSukiSU_28352431503/ReSukiSU_v4.1.0_34993-arm64-v8a-release.apk"
+                echo "未找到 <= 34943 的 ReSukiSU APK，使用回退版本 34993（管理器兼容）"
+              fi
+              curl -fL -o "manager-artifacts/ReSukiSU_34943/ReSukiSU_34943-arm64-v8a-release.apk" "$MANAGER_URL" \
+                || curl -fL -o "manager-artifacts/ReSukiSU_34943/ReSukiSU_34943-arm64-v8a-release.apk" \
+                     "https://github.com/cctv18/ReSukiSU_CI/releases/download/ReSukiSU_28352431503/ReSukiSU_v4.1.0_34993-arm64-v8a-release.apk"
+              echo "kversion=34943" >> $GITHUB_OUTPUT
+              exit 0
+              ;;
             *) LEGACY_RELEASE_TAG="" ;;
           esac
           if [ -n "$LEGACY_RELEASE_TAG" ]; then
@@ -158,7 +207,7 @@ jobs:
             echo "SukiSU..."
             REPO="SukiSU-Ultra/SukiSU-Ultra"
             KSUM="manager"
-          elif [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ]; then
+          elif [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ] || [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU(34943)" ]; then
             echo "ReSukiSU..."
             REPO="ReSukiSU/ReSukiSU"
             KSUM="manager"
