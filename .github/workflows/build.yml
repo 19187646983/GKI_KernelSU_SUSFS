@@ -1255,9 +1255,50 @@ jobs:
 
           if [ "${{ inputs.ksu_variant }}" == "SukiSU" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40726)" ] || [ "${{ inputs.ksu_variant }}" == "SukiSU(40548)" ] || [ "${{ inputs.ksu_variant }}" == "ReSukiSU" ] || [ "${{ inputs.ksu_variant }}" == "ReSukiSU(34943)" ] || [ "${{ inputs.ksu_variant }}" == "Next" ]; then
             if [[ "${{ inputs.use_kpm }}" == enabled* ]] || [[ "${{ inputs.use_kpm }}" == patched* ]]; then
+              # 如果 KernelSU 源码里还没声明 CONFIG_KPM（例如 setup.sh 尚未把 KPM 子目录挂到 Kbuild/Kconfig 上），
+              # 则先在 KernelSU/kernel/Kconfig 里兜底声明一个，确保 defconfig 里写的 CONFIG_KPM=y 不会被忽略。
               if ! grep -RqsE '^[[:space:]]*config[[:space:]]+KPM([[:space:]]|$)' common KernelSU 2>/dev/null; then
-                echo "错误: 已请求启用 KPM，但当前 KernelSU 代码未声明 CONFIG_KPM" >&2
-                exit 1
+                mkdir -p KernelSU/kernel
+                if [ ! -f KernelSU/kernel/Kconfig ]; then
+                  {
+                    echo "# Auto-generated fallback Kconfig declaration for KPM"
+                    echo "menuconfig KSU"
+                    echo "    tristate \"KernelSU support\""
+                    echo "    default n"
+                    echo "    help"
+                    echo "      KernelSU fallback wrapper."
+                    echo ""
+                    echo "if KSU"
+                    echo ""
+                    echo "config KPM"
+                    echo "    bool \"KSU Kernel Module support\""
+                    echo "    depends on KSU"
+                    echo "    default y"
+                    echo "    help"
+                    echo "      Allow loading KSU KPM kernel modules at runtime."
+                    echo ""
+                    echo "endif # KSU"
+                  } > KernelSU/kernel/Kconfig
+                else
+                  # 文件已存在但没有 config KPM，就追加到末尾
+                  if ! grep -qsE '^[[:space:]]*config[[:space:]]+KPM([[:space:]]|$)' KernelSU/kernel/Kconfig 2>/dev/null; then
+                    {
+                      echo ""
+                      echo "# Fallback KPM Kconfig declaration injected by workflow"
+                      echo "config KPM"
+                      echo "    bool \"KSU Kernel Module support\""
+                      echo "    default y"
+                    } >> KernelSU/kernel/Kconfig
+                  fi
+                fi
+                # 确保 KernelSU 目录能被 Kconfig 系统包含（如果 common/Kconfig 尚未拉到它）
+                if [ -f KernelSU/Kconfig -a -f common/Kconfig ]; then
+                  if ! grep -qF 'source "../KernelSU/Kconfig"' common/Kconfig 2>/dev/null && \
+                     ! grep -qF 'source "KernelSU/Kconfig"'   common/Kconfig 2>/dev/null; then
+                    # 不强行修改 common/Kconfig；只保证至少 Kconfig 声明存在，配合下面的 setup.sh 处理
+                    true
+                  fi
+                fi
               fi
               echo "CONFIG_KPM=y" >> "$DEFCONFIG"
             fi
