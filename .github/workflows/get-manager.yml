@@ -154,31 +154,44 @@ jobs:
             "SukiSU(40726)") LEGACY_RELEASE_TAG="v2.1.0-r2"; LEGACY_DIR="SukiSU_40726" ;;
             "SukiSU(40548)") LEGACY_RELEASE_TAG="v2.0.0-r34"; LEGACY_DIR="SukiSU_40548" ;;
             "ReSukiSU(34943)")
-              # 直接从社区 CI 镜像 cctv18/ReSukiSU_CI 下 ReSukiSU v4.1.0_34943 的稳定 APK
+              # 从社区 CI 镜像 cctv18/ReSukiSU_CI 精确下载 v34943 的稳定 APK
               echo "下载 ReSukiSU(34943) 管理器..."
               mkdir -p "manager-artifacts/ReSukiSU_34943"
-              # tag = ReSukiSU_28352431503 对应 v34993，但我们要 34943 这个快照。优先搜索最新 <= 34943 的 release。
-              # 如找不到，则从固定的 v4.1.0_34993 回退（KSU 管理器向下兼容，不高于内核侧版本号即可匹配运行）。
+              TARGET="v34943"
+              FALLBACK_TAG="ReSukiSU_27019748382"
+              FALLBACK_URL="https://github.com/cctv18/ReSukiSU_CI/releases/download/${FALLBACK_TAG}/ReSukiSU_v4.1.0_34943-arm64-v8a-release.apk"
               MANAGER_URL=""
-              RELEASES=$(curl -fsSL "https://api.github.com/repos/cctv18/ReSukiSU_CI/releases?per_page=30" || true)
-              if [ -n "$RELEASES" ]; then
-                MANAGER_URL=$(printf '%s' "$RELEASES" | jq -r '
-                  [.[] | select(.tag_name | startswith("ReSukiSU_"))] |
+              for PAGE in 1 2 3 4 5 6 7 8; do
+                RELEASES=$(curl -fsSL "https://api.github.com/repos/cctv18/ReSukiSU_CI/releases?per_page=30&page=$PAGE" || true)
+                if [ -z "$RELEASES" ]; then continue; fi
+                CANDIDATE=$(printf '%s' "$RELEASES" | jq -r --arg T "$TARGET" '
+                  [.[] | select(.name == $T)] |
+                  .[0] // empty
+                ' 2>/dev/null)
+                if [ -n "$CANDIDATE" ]; then
+                  MANAGER_URL=$(printf '%s' "$CANDIDATE" | jq -r '
+                    .assets[]? |
+                    select(.name | test("ReSukiSU_v4\\.1\\.0_34943-arm64-v8a-release\\.apk$")) |
+                    .browser_download_url
+                  ' 2>/dev/null | head -n 1)
+                  break
+                fi
+                # 如果这页最大版本号已经 < 目标版本，没必要再翻下一页（release 按时间倒序）
+                MAX_ON_PAGE=$(printf '%s' "$RELEASES" | jq -r '
                   [.[] | select(.name | test("^v3[0-9]{4}$"))] |
-                  [.[] | select((.name | ltrimstr("v") | tonumber) <= 34943)] |
-                  sort_by(.name | ltrimstr("v") | tonumber) |
-                  last |
-                  .assets[]? | select(.name | test("ReSukiSU_v.*-arm64-v8a-release\\.apk")) |
-                  .browser_download_url
-                ' 2>/dev/null | head -n 1)
-              fi
+                  [.[] | (.name | ltrimstr("v") | tonumber)] |
+                  max // 0
+                ' 2>/dev/null)
+                if [ -n "$MAX_ON_PAGE" ] && [ "$MAX_ON_PAGE" -lt 34943 ]; then
+                  break
+                fi
+              done
               if [ -z "$MANAGER_URL" ]; then
-                MANAGER_URL="https://github.com/cctv18/ReSukiSU_CI/releases/download/ReSukiSU_28352431503/ReSukiSU_v4.1.0_34993-arm64-v8a-release.apk"
-                echo "未找到 <= 34943 的 ReSukiSU APK，使用回退版本 34993（管理器兼容）"
+                echo "未在 Releases 中精确匹配到 v34943 管理器 APK，使用兜底地址 ${FALLBACK_TAG}"
+                MANAGER_URL="$FALLBACK_URL"
               fi
               curl -fL -o "manager-artifacts/ReSukiSU_34943/ReSukiSU_34943-arm64-v8a-release.apk" "$MANAGER_URL" \
-                || curl -fL -o "manager-artifacts/ReSukiSU_34943/ReSukiSU_34943-arm64-v8a-release.apk" \
-                     "https://github.com/cctv18/ReSukiSU_CI/releases/download/ReSukiSU_28352431503/ReSukiSU_v4.1.0_34993-arm64-v8a-release.apk"
+                || curl -fL -o "manager-artifacts/ReSukiSU_34943/ReSukiSU_34943-arm64-v8a-release.apk" "$FALLBACK_URL"
               echo "kversion=34943" >> $GITHUB_OUTPUT
               exit 0
               ;;

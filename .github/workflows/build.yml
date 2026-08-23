@@ -452,6 +452,11 @@ jobs:
       - name: 添加 KernelSU
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
+          # 每个变体下完源码以后再算 KSU_VERSION；公式不同。
+          # Official: 20000 + git rev-list --count HEAD
+          # Next:     30000 + git rev-list --count HEAD
+          # SukiSU:   40000 + git rev-list --count HEAD - 2815
+          # ReSukiSU: 30700 + git rev-list --count HEAD
           case "${{ inputs.ksu_variant }}" in
             "Official")
               echo "添加 KernelSU 官方版..."
@@ -470,14 +475,107 @@ jobs:
             "Next")
               echo "添加 KernelSU-Next..."
               curl -LSs "https://raw.githubusercontent.com/KernelSU-Next/KernelSU-Next/refs/heads/dev/kernel/setup.sh" | bash -s dev_susfs
+
+              if [ -d "KernelSU/.git" ]; then
+                cd KernelSU
+                KSU_GIT_VERSION=$(git rev-list --count HEAD)
+                KSU_VERSION=$((30000 + KSU_GIT_VERSION))
+                echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+                cd ..
+              fi
               ;;
             "SukiSU")
               echo "添加 ${{ inputs.ksu_variant }}..."
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash $BRANCH
+
+              if [ -d "KernelSU/.git" ]; then
+                cd KernelSU
+                KSU_GIT_VERSION=$(git rev-list --count HEAD)
+                KSU_VERSION=$((40000 + KSU_GIT_VERSION - 2815))
+                echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+                cd ..
+              fi
               ;;
-            "ReSukiSU"|"ReSukiSU(34943)")
-              echo "添加 ReSukiSU..."
+            "SukiSU(40726)"|"SukiSU(40548)")
+              echo "添加 ${{ inputs.ksu_variant }}..."
+              curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash $BRANCH
+
+              if [ "${{ inputs.ksu_variant }}" == "SukiSU(40726)" ]; then
+                PIN_SHA="5da529942987b834c2b02a4819eaa298a8383bf4"
+                KSU_VERSION=40726
+              else
+                PIN_SHA="3170a48c508f6330ea636c51835a84573fe56ef5"
+                KSU_VERSION=40548
+              fi
+              if [ -d "KernelSU/.git" ] && [ -n "$PIN_SHA" ]; then
+                git -C KernelSU checkout "$PIN_SHA" || echo "警告: SukiSU pin sha 检出失败 $PIN_SHA，继续使用当前 HEAD"
+                echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+                if [ -f "KernelSU/kernel/Kbuild" ]; then
+                  sed -i "s/DKSU_VERSION=[0-9]*/DKSU_VERSION=${KSU_VERSION}/" KernelSU/kernel/Kbuild
+                fi
+              fi
+              ;;
+            "ReSukiSU")
+              echo "添加 ReSukiSU (main)..."
               curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash $BRANCH
+
+              if [ -d "KernelSU/.git" ]; then
+                cd KernelSU
+                KSU_GIT_VERSION=$(git rev-list --count HEAD)
+                KSU_VERSION=$((30700 + KSU_GIT_VERSION))
+                echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+                if [ -f "kernel/Kbuild" ]; then
+                  sed -i "s/DKSU_VERSION=[0-9]*/DKSU_VERSION=${KSU_VERSION}/" kernel/Kbuild
+                fi
+                cd ..
+              fi
+              ;;
+            "ReSukiSU(34943)")
+              echo "添加 ReSukiSU (34943)..."
+              curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash $BRANCH
+
+              # 公式：KSU_VERSION = 30700 + git rev-list --count HEAD  =>  target count = 34943 - 30700 = 4243
+              KSU_VERSION=34943
+              TARGET_COUNT=4243
+              if [ -d "KernelSU/.git" ]; then
+                cd KernelSU
+                HEAD_COUNT=$(git rev-list --count HEAD)
+                if [ "$HEAD_COUNT" -gt "$TARGET_COUNT" ]; then
+                  BACKOFF=$((HEAD_COUNT - TARGET_COUNT))
+                  TARGET_SHA=$(git rev-list --max-count=1 --skip="$BACKOFF" HEAD)
+                  if [ -n "$TARGET_SHA" ]; then
+                    NEW_COUNT=$(git rev-list --count "$TARGET_SHA")
+                    if [ "$NEW_COUNT" -eq "$TARGET_COUNT" ]; then
+                      echo "ReSukiSU(34943): checkout $TARGET_SHA (rev-list count $TARGET_COUNT)"
+                      git checkout "$TARGET_SHA"
+                    else
+                      echo "警告: rev-list $TARGET_SHA count=$NEW_COUNT，不等于目标 $TARGET_COUNT; 尝试线性搜索"
+                      # 线性兜底：从 TARGET_COUNT ± 20 内最接近的 commit
+                      BEST_SHA=""
+                      BEST_DIFF=999999
+                      for SHA in $(git rev-list HEAD); do
+                        C=$(git rev-list --count "$SHA" 2>/dev/null || echo 0)
+                        D=$(( C - TARGET_COUNT )); if [ "$D" -lt 0 ]; then D=$(( -D )); fi
+                        if [ "$D" -lt "$BEST_DIFF" ]; then
+                          BEST_DIFF=$D; BEST_SHA=$SHA
+                          if [ "$BEST_DIFF" -eq 0 ]; then break; fi
+                        fi
+                        # 只在前 200 个里找，找不到就用 HEAD
+                        i=$((i+1)); [ "$i" -ge 200 ] && break
+                      done
+                      if [ -n "$BEST_SHA" ]; then
+                        echo "ReSukiSU(34943): 使用最接近 commit $BEST_SHA (diff=$BEST_DIFF)"
+                        git checkout "$BEST_SHA"
+                      fi
+                    fi
+                  fi
+                fi
+                echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+                if [ -f "kernel/Kbuild" ]; then
+                  sed -i "s/DKSU_VERSION=[0-9]*/DKSU_VERSION=${KSU_VERSION}/" kernel/Kbuild
+                fi
+                cd ..
+              fi
               ;;
             *)
               if [ -z "$LEGACY_SUKISU_CONFIG" ]; then
@@ -486,6 +584,13 @@ jobs:
               fi
               echo "添加 ${{ inputs.ksu_variant }}..."
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash $BRANCH
+              if [ -d "KernelSU/.git" ]; then
+                cd KernelSU
+                KSU_GIT_VERSION=$(git rev-list --count HEAD)
+                KSU_VERSION=$((40000 + KSU_GIT_VERSION - 2815))
+                echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+                cd ..
+              fi
               ;;
           esac
 
