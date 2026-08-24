@@ -469,31 +469,31 @@ jobs:
       - name: 添加 KernelSU
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
-          # 公共函数：给 ReSukiSU 注入 KSU_VERSION（直接递归覆盖所有 Kbuild + Makefile EXTRA_CFLAGS，确保 ccflags 传到 init.c 编译单元）
+          # 公共函数：给 ReSukiSU 注入 KSU_VERSION（递归覆盖所有 Kbuild，将动态变量替换为硬编码值）
           inject_resukisu_version() {
             local KSU_TMP="$1"
             [ -z "$KSU_TMP" ] || [ "$KSU_TMP" = "0" ] && return 0
             local f
-            # 递归查找所有可能被编译到的 Kbuild 文件
+            # 递归查找所有 Kbuild 文件
             while IFS= read -r -d '' f; do
               if [ -f "$f" ]; then
-                # 先把已有的 -DKSU_VERSION=N 替换为正确值（如果存在）
-                if grep -qE '\-DKSU_VERSION=[0-9]+' "$f" 2>/dev/null; then
-                  sed -i -E "s/-DKSU_VERSION=[0-9]+/-DKSU_VERSION=${KSU_TMP}/g" "$f"
+                # 替换 ccflags-y += -DKSU_VERSION=<任何值> 为硬编码值
+                # 匹配: -DKSU_VERSION=数字 或 -DKSU_VERSION=$(变量)
+                if grep -qE '\-DKSU_VERSION=' "$f" 2>/dev/null; then
+                  sed -i -E "s/\-DKSU_VERSION=[^[:space:]]*/-DKSU_VERSION=${KSU_TMP}/g" "$f"
                 else
-                  # 没有 -DKSU_VERSION，则追加一行
                   echo "ccflags-y += -DKSU_VERSION=${KSU_TMP}" >> "$f"
                 fi
-                # 同时更新/追加 DKSU_VERSION 变量（供 Kbuild 内部 $(DKSU_VERSION) 引用）
+                # 替换 DKSU_VERSION 变量定义（如果存在）
                 if grep -qE '(^|[^A-Z0-9_])DKSU_VERSION\s*:?=' "$f" 2>/dev/null; then
-                  sed -i -E "s/((^|[^A-Z0-9_])DKSU_VERSION\s*:?=)\s*[0-9]+/\1${KSU_TMP}/" "$f"
+                  sed -i -E "s/((^|[^A-Z0-9_])DKSU_VERSION\s*:?=)\s*.*/\1${KSU_TMP}/" "$f"
                 else
                   echo "DKSU_VERSION = ${KSU_TMP}" >> "$f"
                 fi
               fi
             done < <(find common/drivers/kernelsu drivers/kernelsu KernelSU/kernel -name Kbuild -print0 2>/dev/null)
 
-            # 关键：在 Makefile 级别注入 EXTRA_CFLAGS，确保子目录编译单元（如 core/init.c）能继承 KSU_VERSION 宏
+            # 兜底：在 Makefile 级别注入 EXTRA_CFLAGS（如果 Kbuild 未生效）
             local makefile_candidates=(
               "drivers/Makefile"
               "common/drivers/Makefile"
@@ -503,15 +503,14 @@ jobs:
             )
             for mf in "${makefile_candidates[@]}"; do
               if [ -f "$mf" ]; then
-                if grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=[0-9]+' "$mf" 2>/dev/null; then
-                  sed -i -E "s/(EXTRA_CFLAGS.*)\-DKSU_VERSION=[0-9]+/\1-DKSU_VERSION=${KSU_TMP}/g" "$mf"
+                if grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=' "$mf" 2>/dev/null; then
+                  sed -i -E "s/(EXTRA_CFLAGS.*)\-DKSU_VERSION=[^[:space:]]*/\1-DKSU_VERSION=${KSU_TMP}/g" "$mf"
                 elif ! grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=' "$mf" 2>/dev/null; then
                   echo "EXTRA_CFLAGS += -DKSU_VERSION=${KSU_TMP}" >> "$mf"
                 fi
               fi
             done
-
-            # 如果以上都没命中，兜底注入到根 Makefile
+            # 兜底注入到根 Makefile
             if [ -f "Makefile" ]; then
               if ! grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=' "Makefile" 2>/dev/null; then
                 echo "EXTRA_CFLAGS += -DKSU_VERSION=${KSU_TMP}" >> "Makefile"
@@ -519,11 +518,12 @@ jobs:
             fi
           }
 
-          # 公共函数：SukiSU 多入口替换/兜底（替换已有值 + 兜底 append + Makefile EXTRA_CFLAGS）
+          # 公共函数：SukiSU 多入口替换/兜底（将动态变量替换为硬编码值）
           inject_sukisu_version() {
             local KSU_TMP="$1"
             [ -z "$KSU_TMP" ] && return 0
             local f
+            # 先处理主 Kbuild 文件（替换任何 -DKSU_VERSION= 值）
             for f in \
               "KernelSU/kernel/Kbuild" \
               "common/drivers/kernelsu/kernel/Kbuild" \
@@ -531,22 +531,29 @@ jobs:
               "drivers/kernelsu/kernel/Kbuild" \
               "drivers/kernelsu/Kbuild"; do
               if [ -f "$f" ]; then
-                if grep -qE '(^|[^A-Z0-9_])DKSU_VERSION\s*:?=' "$f" 2>/dev/null; then
-                  sed -i -E "s/((^|[^A-Z0-9_])DKSU_VERSION\s*:?=)\s*[0-9]+/\1${KSU_TMP}/" "$f"
+                # 替换 ccflags-y += -DKSU_VERSION=<任何值>
+                if grep -qE '\-DKSU_VERSION=' "$f" 2>/dev/null; then
+                  sed -i -E "s/\-DKSU_VERSION=[^[:space:]]*/-DKSU_VERSION=${KSU_TMP}/g" "$f"
+                else
+                  echo "ccflags-y += -DKSU_VERSION=${KSU_TMP}" >> "$f"
                 fi
-                if grep -qE '\-DKSU_VERSION=[0-9]+' "$f" 2>/dev/null; then
-                  sed -i -E "s/-DKSU_VERSION=[0-9]+/-DKSU_VERSION=${KSU_TMP}/g" "$f"
+                # 替换 DKSU_VERSION 变量
+                if grep -qE '(^|[^A-Z0-9_])DKSU_VERSION\s*:?=' "$f" 2>/dev/null; then
+                  sed -i -E "s/((^|[^A-Z0-9_])DKSU_VERSION\s*:?=)\s*.*/\1${KSU_TMP}/" "$f"
+                else
+                  echo "DKSU_VERSION = ${KSU_TMP}" >> "$f"
                 fi
               fi
             done
+            # 兜底：其他 Kbuild 文件
             for f in "common/drivers/kernelsu/Kbuild" "drivers/kernelsu/Kbuild"; do
               if [ -f "$f" ]; then
-                if ! grep -qE '(-DKSU_VERSION=[0-9]+|DKSU_VERSION\s*=)' "$f" 2>/dev/null; then
+                if ! grep -qE '\-DKSU_VERSION=' "$f" 2>/dev/null; then
                   echo "ccflags-y += -DKSU_VERSION=${KSU_TMP}" >> "$f"
                 fi
               fi
             done
-            # Makefile 级别注入 EXTRA_CFLAGS，确保编译单元继承 KSU_VERSION
+            # Makefile 级别注入 EXTRA_CFLAGS
             local makefile_candidates=(
               "drivers/Makefile"
               "common/drivers/Makefile"
@@ -556,8 +563,8 @@ jobs:
             )
             for mf in "${makefile_candidates[@]}"; do
               if [ -f "$mf" ]; then
-                if grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=[0-9]+' "$mf" 2>/dev/null; then
-                  sed -i -E "s/(EXTRA_CFLAGS.*)\-DKSU_VERSION=[0-9]+/\1-DKSU_VERSION=${KSU_TMP}/g" "$mf"
+                if grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=' "$mf" 2>/dev/null; then
+                  sed -i -E "s/(EXTRA_CFLAGS.*)\-DKSU_VERSION=[^[:space:]]*/\1-DKSU_VERSION=${KSU_TMP}/g" "$mf"
                 elif ! grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=' "$mf" 2>/dev/null; then
                   echo "EXTRA_CFLAGS += -DKSU_VERSION=${KSU_TMP}" >> "$mf"
                 fi
