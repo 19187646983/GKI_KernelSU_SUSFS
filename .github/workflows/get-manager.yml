@@ -279,7 +279,7 @@ jobs:
             git_version=$(git -C KernelSU rev-list --count "$head_sha")
             case "${{ inputs.kernelsu_variant }}" in
               "SukiSU") echo $((40000 + git_version - 2815)) ;;
-              "ReSukiSU") echo $((30700 + git_version)) ;;
+              "ReSukiSU"|"ReSukiSU(34943)") echo $((30700 + git_version)) ;;
               "Official") echo $((20000 + git_version)) ;;
               "Next") echo $((30000 + git_version)) ;;
               *) return 1 ;;
