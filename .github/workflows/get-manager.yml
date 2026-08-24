@@ -218,70 +218,8 @@ jobs:
               ;;
             "SukiSU(40548)") LEGACY_RELEASE_TAG="v2.0.0-r34"; LEGACY_DIR="SukiSU_40548" ;;
             "ReSukiSU(34943)")
-              echo "下载 ReSukiSU(34943) 管理器..."
-              FALLBACK_TAG="ReSukiSU_27019748382"
-              FALLBACK_URL="https://github.com/cctv18/ReSukiSU_CI/releases/download/${FALLBACK_TAG}/ReSukiSU_v4.1.0_34943-arm64-v8a-release.apk"
-              REPO="cctv18/ReSukiSU_CI"
-              FILENAME="ReSukiSU CI构建.yml"
-              TARGET_KSU_VERSION=34943
-              DOWNLOADED=false
-
-              echo "尝试从 $REPO 的 CI $FILENAME 构建历史中获取多管理器变体..."
-              for PAGE in $(seq 1 8); do
-                RUNS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                  "https://api.github.com/repos/$REPO/actions/workflows?per_page=100" || true)
-                WORKFLOW_ID=$(printf '%s' "$RUNS" | jq -r '.workflows[]? | select(.name | ascii_downcase | contains("构建") or ascii_downcase | contains("build") or ascii_downcase | contains("ci")) | .id' 2>/dev/null | head -n 1)
-                if [ -z "$WORKFLOW_ID" ] || [ "$WORKFLOW_ID" = "null" ]; then
-                  break
-                fi
-                RUNS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                  "https://api.github.com/repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?status=success&per_page=30&page=$PAGE" || true)
-                RUN_COUNT=$(printf '%s' "$RUNS" | jq '.workflow_runs | length' 2>/dev/null || echo 0)
-                [ "$RUN_COUNT" -eq 0 ] && break
-
-                for INDEX in $(seq 0 $((RUN_COUNT - 1))); do
-                  BUILD_ID=$(printf '%s' "$RUNS" | jq -r ".workflow_runs[$INDEX].id" 2>/dev/null)
-                  [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "null" ] && continue
-
-                  ARTIFACTS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
-                    "https://api.github.com/repos/$REPO/actions/runs/$BUILD_ID/artifacts" || true)
-
-                  TARGET_LIST=$(printf '%s' "$ARTIFACTS" | jq -r '
-                    .artifacts[]? | select((.name | ascii_downcase | contains("manager")) and (.name | ascii_downcase | contains("release"))) |
-                    "\(.name)\t\(.archive_download_url)"
-                  ' 2>/dev/null)
-                  [ -z "$TARGET_LIST" ] && continue
-
-                  HAS_34943=$(printf '%s' "$ARTIFACTS" | jq -r '.artifacts[]?.name' 2>/dev/null | grep -c "34943" || true)
-                  [ "$HAS_34943" -eq 0 ] && continue
-
-                  echo "  找到匹配 ReSukiSU(34943) 的 CI 构建: $BUILD_ID"
-                  echo "$TARGET_LIST" | while IFS=$'\t' read -r NAME URL; do
-                    SAFE_NAME=$(echo "$NAME" | tr '/ ' '__')
-                    echo "  下载 CI 产物: $NAME"
-                    curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o "${SAFE_NAME}.zip" "$URL" 2>/dev/null || continue
-                    mkdir -p "manager-artifacts/$SAFE_NAME"
-                    unzip -o "${SAFE_NAME}.zip" -d "manager-artifacts/$SAFE_NAME" 2>/dev/null || true
-                    rm -f "${SAFE_NAME}.zip"
-                    echo "  已安装: $NAME"
-                  done
-                  DOWNLOADED=true
-                  break 3
-                done
-              done
-
-              if [ "$DOWNLOADED" = false ]; then
-                echo "未找到 ReSukiSU(34943) 多管理器 CI 产物，使用兜底 release APK..."
-                mkdir -p "manager-artifacts/ReSukiSU_34943"
-                curl -fL -o "manager-artifacts/ReSukiSU_34943/ReSukiSU_34943-arm64-v8a-release.apk" "$FALLBACK_URL" || true
-              fi
-
-              echo "仅保留 ReSukiSU arm64-v8a release 管理器..."
-              find manager-artifacts -type f -name "*.apk" ! -name "*-arm64-v8a-release.apk" ! -name "*Spoofed*release*" -delete 2>/dev/null || true
-              find manager-artifacts -type f -name "*debug*.apk" -delete 2>/dev/null || true
-              find manager-artifacts -type f -name "*.apk" -print
+              echo "ReSukiSU(34943) 复用 ReSukiSU CI 多变体下载流程"
               echo "kversion=34943" >> $GITHUB_OUTPUT
-              exit 0
               ;;
             *) LEGACY_RELEASE_TAG="" ;;
           esac
@@ -353,7 +291,7 @@ jobs:
             if [ "${{ inputs.kernelsu_variant }}" == "Next" ]; then
               printf '%s' "$artifacts" | jq -r --arg name "$KSUM" \
                 '.artifacts[] | select(.name == $name) | "\(.name)\t\(.archive_download_url)"'
-            elif [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ]; then
+            elif [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ] || [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU(34943)" ]; then
               printf '%s' "$artifacts" | jq -r \
                 '.artifacts[] | select(.name == "Manager-release" or .name == "Spoofed-Manager-release") | "\(.name)\t\(.archive_download_url)"'
             else
@@ -435,9 +373,9 @@ jobs:
             rm -rf "$ZIP_NAME"
           done
 
-          if [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ]; then
+          if [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU" ] || [ "${{ inputs.kernelsu_variant }}" == "ReSukiSU(34943)" ]; then
             echo "仅保留 ReSukiSU arm64-v8a release 管理器..."
-            find manager-artifacts -type f -name "*.apk" ! -name "*-arm64-v8a-release.apk" -delete
+            find manager-artifacts -type f -name "*.apk" ! -name "*-arm64-v8a-release.apk" ! -name "*Spoofed*" -delete
             find manager-artifacts -type f -name "*debug*.apk" -delete
             if ! find manager-artifacts -type f -name "*-arm64-v8a-release.apk" | grep -q .; then
               echo "未找到 ReSukiSU arm64-v8a release 管理器。"
