@@ -75,7 +75,7 @@ on:
       artifact_upload_mode:
         required: false
         type: string
-        default: "上传全部"
+        default: "仅上传 AnyKernel3.zip"
       droidspaces_ntsync:
         required: false
         type: boolean
@@ -172,6 +172,27 @@ jobs:
           chmod 0755 "$GITHUB_WORKSPACE/git-repo/repo"
           echo "$GITHUB_WORKSPACE/git-repo" >> "$GITHUB_PATH"
           echo "REPO=$GITHUB_WORKSPACE/git-repo/repo" >> $GITHUB_ENV
+
+      - name: 确定变体版本号
+        run: |
+          case "${{ inputs.ksu_variant }}" in
+            "SukiSU(40726)") KSU_VERSION=40796 ;;
+            "SukiSU(40548)") KSU_VERSION=40548 ;;
+            "ReSukiSU(34943)") KSU_VERSION=34943 ;;
+            *) KSU_VERSION="" ;;
+          esac
+
+          if [ -n "$KSU_VERSION" ]; then
+            ARTIFACT_PREFIX=$(echo "${{ inputs.ksu_variant }}" | sed -E "s/\([0-9]+\)/($KSU_VERSION)/")
+          else
+            ARTIFACT_PREFIX="${{ inputs.ksu_variant }}"
+          fi
+
+          echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+          echo "ARTIFACT_PREFIX=$ARTIFACT_PREFIX" >> $GITHUB_ENV
+          echo "KSU_VERSION: $KSU_VERSION"
+          echo "ARTIFACT_PREFIX: $ARTIFACT_PREFIX"
+          echo "变体版本映射: ${{ inputs.ksu_variant }} -> $ARTIFACT_PREFIX"
 
       - name: 显示配置信息
         run: |
@@ -1754,7 +1775,7 @@ jobs:
         if: ${{ always() && steps.compile_kernel.outcome == 'failure' }}
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.ksu_variant }}_kernel-${{ env.CONFIG }}-Build-Logs
+          name: ${{ env.ARTIFACT_PREFIX }}_kernel-${{ env.CONFIG }}-Build-Logs
           path: build-logs/
           if-no-files-found: warn
           retention-days: 7
@@ -1801,7 +1822,7 @@ jobs:
         if: inputs.artifact_upload_mode == '上传全部'
         run: |
           cd "$ANYKERNEL3"
-          ZIP_NAME="${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-AnyKernel3.zip"
+          ZIP_NAME="${{ env.ARTIFACT_PREFIX }}-${{ inputs.android_version }}-${{ inputs.kernel_version }}.${{ inputs.sub_level }}-${{ inputs.os_patch_level }}-AnyKernel3.zip"
           mv ../Image ./Image
           zip -r "../$ZIP_NAME" ./*
 
@@ -1889,7 +1910,7 @@ jobs:
         if: inputs.artifact_upload_mode != '上传全部'
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.ksu_variant }}_kernel-${{ env.CONFIG }}-AnyKernel3
+          name: ${{ env.ARTIFACT_PREFIX }}_kernel-${{ env.CONFIG }}-AnyKernel3
           path: AnyKernel3/*
           compression-level: 9
 
@@ -1897,7 +1918,7 @@ jobs:
         if: inputs.artifact_upload_mode == '上传全部'
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.ksu_variant }}_kernel-${{ env.CONFIG }}
+          name: ${{ env.ARTIFACT_PREFIX }}_kernel-${{ env.CONFIG }}
           path: |
             *AnyKernel3.zip
             *.img
@@ -1907,7 +1928,7 @@ jobs:
         if: always() && env.REJ_COUNT > 0
         uses: actions/upload-artifact@v6
         with:
-          name: ${{ inputs.ksu_variant }}_kernel-${{ env.CONFIG }}-Rejects
+          name: ${{ env.ARTIFACT_PREFIX }}_kernel-${{ env.CONFIG }}-Rejects
           path: patch-rejects/
           if-no-files-found: ignore
           compression-level: 9
