@@ -416,6 +416,23 @@ jobs:
                 BRANCH="-s builtin"
               fi
               ;;
+            "SukiSU(40726)")
+              # SukiSU(40726): 使用 SukiSU-Ultra v4.1.3 (带 KPM 支持)
+              BRANCH="-s v4.1.3"
+              ;;
+            "SukiSU(40548)")
+              # SukiSU(40548): 使用 SukiSU-Ultra 固定提交
+              if [ -z "$LEGACY_SUKISU_CONFIG" ] || [ ! -f "$LEGACY_SUKISU_CONFIG" ]; then
+                echo "未知变体: $variant_input" >&2
+                exit 1
+              fi
+              SUKISU_FIXED_COMMIT=$(grep "^sukisu=" "$LEGACY_SUKISU_CONFIG" | cut -d'=' -f2-)
+              if [ -z "$SUKISU_FIXED_COMMIT" ]; then
+                echo "未在 $LEGACY_SUKISU_CONFIG 配置 SukiSU 固定提交" >&2
+                exit 1
+              fi
+              BRANCH="-s $SUKISU_FIXED_COMMIT"
+              ;;
             "Next")
               BRANCH=""
               ;;
@@ -452,47 +469,57 @@ jobs:
       - name: 添加 KernelSU
         working-directory: ${{ env.KERNEL_ROOT }}
         run: |
-          # 公共函数：唯一化注入 KSU_VERSION（清理旧定义 -> 每个入口一条 DKSU_VERSION -> 仅第一个入口写一条 ccflags -D）
-          inject_ksu_version_unique() {
+          # 公共函数：给 ReSukiSU 注入 KSU_VERSION（直接递归覆盖所有 Kbuild + Makefile EXTRA_CFLAGS，确保 ccflags 传到 init.c 编译单元）
+          inject_resukisu_version() {
             local KSU_TMP="$1"
             [ -z "$KSU_TMP" ] || [ "$KSU_TMP" = "0" ] && return 0
-            local KBUILD_LIST=(
-              "KernelSU/kernel/Kbuild"
-              "common/drivers/kernelsu/kernel/Kbuild"
-              "common/drivers/kernelsu/Kbuild"
-              "drivers/kernelsu/kernel/Kbuild"
-              "drivers/kernelsu/Kbuild"
-            )
-            # 清理所有旧的 DKSU_VERSION 赋值与 -DKSU_VERSION= 追加项（避免 3494334943 字符串拼接）
-            for f in "${KBUILD_LIST[@]}"; do
+            local f
+            # 递归查找所有可能被编译到的 Kbuild 文件
+            while IFS= read -r -d '' f; do
               if [ -f "$f" ]; then
-                sed -i -E '/(^|[^A-Z0-9_])DKSU_VERSION\s*:?=/d' "$f"
-                sed -i -E 's/(^|[[:space:]])-DKSU_VERSION=[0-9]+/\1/g' "$f"
-                sed -i -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' "$f"
+                # 先把已有的 -DKSU_VERSION=N 替换为正确值（如果存在）
+                if grep -qE '\-DKSU_VERSION=[0-9]+' "$f" 2>/dev/null; then
+                  sed -i -E "s/-DKSU_VERSION=[0-9]+/-DKSU_VERSION=${KSU_TMP}/g" "$f"
+                else
+                  # 没有 -DKSU_VERSION，则追加一行
+                  echo "ccflags-y += -DKSU_VERSION=${KSU_TMP}" >> "$f"
+                fi
+                # 同时更新/追加 DKSU_VERSION 变量（供 Kbuild 内部 $(DKSU_VERSION) 引用）
+                if grep -qE '(^|[^A-Z0-9_])DKSU_VERSION\s*:?=' "$f" 2>/dev/null; then
+                  sed -i -E "s/((^|[^A-Z0-9_])DKSU_VERSION\s*:?=)\s*[0-9]+/\1${KSU_TMP}/" "$f"
+                else
+                  echo "DKSU_VERSION = ${KSU_TMP}" >> "$f"
+                fi
               fi
-            done
-            # 唯一化注入：每个入口一条 DKSU_VERSION；只在"第一个入口"里写一条 ccflags -D
-            local FIRST_DONE=0 f
-            for f in "${KBUILD_LIST[@]}"; do
-              if [ -f "$f" ]; then
-                {
-                  echo ""
-                  echo "# Kernel version injection by workflow (single source of truth)"
-                  echo "DKSU_VERSION = ${KSU_TMP}"
-                } >> "$f"
-                if [ "$FIRST_DONE" -eq 0 ]; then
-                  if ! grep -qE 'ccflags-[a-z]*\s*\+?=' "$f"; then
-                    echo "ccflags-y := -DKSU_VERSION=${KSU_TMP}" >> "$f"
-                  else
-                    perl -i -0777 -pe 's/(^|\n)([ \t]*ccflags-[a-zA-Z]*[ \t]*\+?:=[^\n]*\n)/$1$2ccflags-y += -DKSU_VERSION='"${KSU_TMP}"'\n/s' "$f"
-                  fi
-                  FIRST_DONE=1
+            done < <(find common/drivers/kernelsu drivers/kernelsu KernelSU/kernel -name Kbuild -print0 2>/dev/null)
+
+            # 关键：在 Makefile 级别注入 EXTRA_CFLAGS，确保子目录编译单元（如 core/init.c）能继承 KSU_VERSION 宏
+            local makefile_candidates=(
+              "drivers/Makefile"
+              "common/drivers/Makefile"
+              "drivers/kernelsu/Makefile"
+              "common/drivers/kernelsu/Makefile"
+              "KernelSU/kernel/Makefile"
+            )
+            for mf in "${makefile_candidates[@]}"; do
+              if [ -f "$mf" ]; then
+                if grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=[0-9]+' "$mf" 2>/dev/null; then
+                  sed -i -E "s/(EXTRA_CFLAGS.*)\-DKSU_VERSION=[0-9]+/\1-DKSU_VERSION=${KSU_TMP}/g" "$mf"
+                elif ! grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=' "$mf" 2>/dev/null; then
+                  echo "EXTRA_CFLAGS += -DKSU_VERSION=${KSU_TMP}" >> "$mf"
                 fi
               fi
             done
+
+            # 如果以上都没命中，兜底注入到根 Makefile
+            if [ -f "Makefile" ]; then
+              if ! grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=' "Makefile" 2>/dev/null; then
+                echo "EXTRA_CFLAGS += -DKSU_VERSION=${KSU_TMP}" >> "Makefile"
+              fi
+            fi
           }
 
-          # 公共函数：SukiSU 多入口替换/兜底（不会造成重复定义，因为先替换再"没定义才 append"）
+          # 公共函数：SukiSU 多入口替换/兜底（替换已有值 + 兜底 append + Makefile EXTRA_CFLAGS）
           inject_sukisu_version() {
             local KSU_TMP="$1"
             [ -z "$KSU_TMP" ] && return 0
@@ -519,6 +546,28 @@ jobs:
                 fi
               fi
             done
+            # Makefile 级别注入 EXTRA_CFLAGS，确保编译单元继承 KSU_VERSION
+            local makefile_candidates=(
+              "drivers/Makefile"
+              "common/drivers/Makefile"
+              "drivers/kernelsu/Makefile"
+              "common/drivers/kernelsu/Makefile"
+              "KernelSU/kernel/Makefile"
+            )
+            for mf in "${makefile_candidates[@]}"; do
+              if [ -f "$mf" ]; then
+                if grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=[0-9]+' "$mf" 2>/dev/null; then
+                  sed -i -E "s/(EXTRA_CFLAGS.*)\-DKSU_VERSION=[0-9]+/\1-DKSU_VERSION=${KSU_TMP}/g" "$mf"
+                elif ! grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=' "$mf" 2>/dev/null; then
+                  echo "EXTRA_CFLAGS += -DKSU_VERSION=${KSU_TMP}" >> "$mf"
+                fi
+              fi
+            done
+            if [ -f "Makefile" ]; then
+              if ! grep -qE 'EXTRA_CFLAGS.*\-DKSU_VERSION=' "Makefile" 2>/dev/null; then
+                echo "EXTRA_CFLAGS += -DKSU_VERSION=${KSU_TMP}" >> "Makefile"
+              fi
+            fi
           }
 
           # 每个变体下完源码以后再算 KSU_VERSION；公式不同。
@@ -570,14 +619,15 @@ jobs:
               curl -LSs "https://raw.githubusercontent.com/SukiSU-Ultra/SukiSU-Ultra/main/kernel/setup.sh" | bash $BRANCH
 
               if [ "${{ inputs.ksu_variant }}" == "SukiSU(40726)" ]; then
-                PIN_SHA="5da529942987b834c2b02a4819eaa298a8383bf4"
-                KSU_VERSION=40726
+                # 使用 SukiSU-Ultra v4.1.3 (带 KPM 支持)，内核版本 40796
+                KSU_VERSION=40796
+                echo "SukiSU(40726): 使用 SukiSU-Ultra v4.1.3 源码，KSU_VERSION=$KSU_VERSION"
               else
                 PIN_SHA="3170a48c508f6330ea636c51835a84573fe56ef5"
                 KSU_VERSION=40548
-              fi
-              if [ -d "KernelSU/.git" ] && [ -n "$PIN_SHA" ]; then
-                git -C KernelSU checkout "$PIN_SHA" || echo "警告: SukiSU pin sha 检出失败 $PIN_SHA，继续使用当前 HEAD"
+                if [ -d "KernelSU/.git" ] && [ -n "$PIN_SHA" ]; then
+                  git -C KernelSU checkout "$PIN_SHA" || echo "警告: SukiSU pin sha 检出失败 $PIN_SHA，继续使用当前 HEAD"
+                fi
               fi
               echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
               inject_sukisu_version "$KSU_VERSION"
@@ -593,7 +643,7 @@ jobs:
                 echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
                 cd ..
               fi
-              inject_ksu_version_unique "${KSU_VERSION:-0}"
+              inject_resukisu_version "${KSU_VERSION:-0}"
               ;;
             "ReSukiSU(34943)")
               echo "添加 ReSukiSU (34943)..."
@@ -637,7 +687,7 @@ jobs:
                 cd ..
               fi
               echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
-              inject_ksu_version_unique "$KSU_VERSION"
+              inject_resukisu_version "$KSU_VERSION"
               ;;
             *)
               if [ -z "$LEGACY_SUKISU_CONFIG" ]; then
