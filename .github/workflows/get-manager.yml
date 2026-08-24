@@ -389,8 +389,8 @@ jobs:
         continue-on-error: true
         run: |
           case "${{ inputs.kernelsu_variant }}" in
-            "SukiSU(40726)")
-              echo "下载 SukiSU 对应的 SUSFS 模块..."
+            "SukiSU(40726)"|"ReSukiSU(34943)")
+              echo "下载 ${{ inputs.kernelsu_variant }} 对应的 SUSFS 模块..."
               echo "SUSFS_NAME=release-1.5.2+_4163b1a" >> $GITHUB_ENV
               BUILD_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
                 "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/workflows/build.yml/runs?status=success" |
