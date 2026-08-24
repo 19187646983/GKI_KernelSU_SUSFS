@@ -509,11 +509,38 @@ jobs:
               fi
               if [ -d "KernelSU/.git" ] && [ -n "$PIN_SHA" ]; then
                 git -C KernelSU checkout "$PIN_SHA" || echo "警告: SukiSU pin sha 检出失败 $PIN_SHA，继续使用当前 HEAD"
-                echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
-                if [ -f "KernelSU/kernel/Kbuild" ]; then
-                  sed -i "s/DKSU_VERSION=[0-9]*/DKSU_VERSION=${KSU_VERSION}/" KernelSU/kernel/Kbuild
-                fi
               fi
+              echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+
+              # 强制把 KSU_VERSION 注入到所有会参与编译的入口（setup.sh 可能改目录名/把源码搬到 drivers/kernelsu）：
+              # 1) KernelSU/kernel/Kbuild 的 DKSU_VERSION；
+              # 2) common/drivers/kernelsu/kernel/Kbuild 的 DKSU_VERSION（实际参与编译的 Kbuild）；
+              # 3) Kbuild/Makefile 若以 ccflags-append -DKSU_VERSION=xxx 形式定义，也一并替换；
+              # 4) 最终兜底：直接在 common/drivers/kernelsu/Kbuild 里 append -DKSU_VERSION=<N>（只要没定义过就生效）。
+              for f in \
+                "KernelSU/kernel/Kbuild" \
+                "common/drivers/kernelsu/kernel/Kbuild" \
+                "common/drivers/kernelsu/Kbuild" \
+                "drivers/kernelsu/kernel/Kbuild" \
+                "drivers/kernelsu/Kbuild"; do
+                if [ -f "$f" ]; then
+                  if grep -qE '(^|[^A-Z0-9_])DKSU_VERSION\s*:?=' "$f" 2>/dev/null; then
+                    sed -i -E "s/((^|[^A-Z0-9_])DKSU_VERSION\s*:?=)\s*[0-9]+/\1${KSU_VERSION}/" "$f"
+                  fi
+                  # 如果是通过 ccflags-y += -DKSU_VERSION= 或类似定义的，也替换
+                  if grep -qE '\-DKSU_VERSION=[0-9]+' "$f" 2>/dev/null; then
+                    sed -i -E "s/-DKSU_VERSION=[0-9]+/-DKSU_VERSION=${KSU_VERSION}/g" "$f"
+                  fi
+                fi
+              done
+              # 兜底：在实际编译到的 drivers/kernelsu/Kbuild 里强制 append 一个（GKI Kleaf 通常走 common/ 下）
+              for f in "common/drivers/kernelsu/Kbuild" "drivers/kernelsu/Kbuild"; do
+                if [ -f "$f" ]; then
+                  if ! grep -qE '(-DKSU_VERSION=[0-9]+|DKSU_VERSION\s*=)' "$f" 2>/dev/null; then
+                    echo "ccflags-y += -DKSU_VERSION=${KSU_VERSION}" >> "$f"
+                  fi
+                fi
+              done
               ;;
             "ReSukiSU")
               echo "添加 ReSukiSU (main)..."
@@ -524,12 +551,11 @@ jobs:
                 KSU_GIT_VERSION=$(git rev-list --count HEAD)
                 KSU_VERSION=$((30700 + KSU_GIT_VERSION))
                 echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
-                if [ -f "kernel/Kbuild" ]; then
-                  sed -i "s/DKSU_VERSION=[0-9]*/DKSU_VERSION=${KSU_VERSION}/" kernel/Kbuild
-                fi
                 cd ..
               fi
-              ;;
+              ;;&
+              RESUKI_PIN_HELP=1
+              ;;&
             "ReSukiSU(34943)")
               echo "添加 ReSukiSU (34943)..."
               curl -LSs "https://raw.githubusercontent.com/ReSukiSU/ReSukiSU/main/kernel/setup.sh" | bash $BRANCH
@@ -550,9 +576,9 @@ jobs:
                       git checkout "$TARGET_SHA"
                     else
                       echo "警告: rev-list $TARGET_SHA count=$NEW_COUNT，不等于目标 $TARGET_COUNT; 尝试线性搜索"
-                      # 线性兜底：从 TARGET_COUNT ± 20 内最接近的 commit
                       BEST_SHA=""
                       BEST_DIFF=999999
+                      i=0
                       for SHA in $(git rev-list HEAD); do
                         C=$(git rev-list --count "$SHA" 2>/dev/null || echo 0)
                         D=$(( C - TARGET_COUNT )); if [ "$D" -lt 0 ]; then D=$(( -D )); fi
@@ -560,7 +586,6 @@ jobs:
                           BEST_DIFF=$D; BEST_SHA=$SHA
                           if [ "$BEST_DIFF" -eq 0 ]; then break; fi
                         fi
-                        # 只在前 200 个里找，找不到就用 HEAD
                         i=$((i+1)); [ "$i" -ge 200 ] && break
                       done
                       if [ -n "$BEST_SHA" ]; then
@@ -570,12 +595,56 @@ jobs:
                     fi
                   fi
                 fi
-                echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
-                if [ -f "kernel/Kbuild" ]; then
-                  sed -i "s/DKSU_VERSION=[0-9]*/DKSU_VERSION=${KSU_VERSION}/" kernel/Kbuild
-                fi
                 cd ..
               fi
+              echo "KSU_VERSION=$KSU_VERSION" >> $GITHUB_ENV
+              ;;&
+            "ReSukiSU"|"ReSukiSU(34943)")
+              # ReSukiSU 编译时 KSU_VERSION 是通过命令行 -DKSU_VERSION=xxx 宏定义传入的（并非 DKSU_VERSION）。
+              # setup.sh 会把源码 patch 到 common/drivers/kernelsu/ 下，所以这里强制在所有可能参与编译的 Kbuild
+              # 里：1) 替换已有的 DKSU_VERSION=xxx；2) 替换 -DKSU_VERSION=xxx；3) 兜底 ccflags append。
+              KSU_TMP="${KSU_VERSION:-0}"
+              # 修复致命问题：如果之前重复写入过 "KSU_VERSION=xxx" 两次，内核编译时会变成 #define KSU_VERSION 3494334943
+              # （字符串拼接），导致 pr_info("%u", KSU_VERSION) 的 %u 不匹配 long 而报错。
+              # 为避免 setup.sh 再追加一次，先直接统一把所有 Kbuild/ccflags 里的版本号"重置/清理"，再写一次。
+              KBUILD_LIST=(
+                "KernelSU/kernel/Kbuild"
+                "common/drivers/kernelsu/kernel/Kbuild"
+                "common/drivers/kernelsu/Kbuild"
+                "drivers/kernelsu/kernel/Kbuild"
+                "drivers/kernelsu/Kbuild"
+              )
+              for f in "${KBUILD_LIST[@]}"; do
+                if [ -f "$f" ]; then
+                  # 删除重复/旧的 DKSU_VERSION 赋值与 -DKSU_VERSION= 追加项
+                  sed -i -E '/(^|[^A-Z0-9_])DKSU_VERSION\s*:?=/d' "$f"
+                  sed -i -E 's/(^|[[:space:]])-DKSU_VERSION=[0-9]+/\1/g' "$f"
+                  # 去掉可能残留的多余空白
+                  sed -i -E 's/[[:space:]]+/ /g; s/^ //; s/ $//' "$f"
+                fi
+              done
+              # 现在每个 Kbuild 里写"唯一"的一条 DKSU_VERSION +（只保留一处）ccflags 宏定义
+              FIRST_DONE=0
+              for f in "${KBUILD_LIST[@]}"; do
+                if [ -f "$f" ]; then
+                  {
+                    echo ""
+                    echo "# Kernel version injection by workflow (single source of truth)"
+                    echo "DKSU_VERSION = ${KSU_TMP}"
+                  } >> "$f"
+                  # 只在"最靠近实际编译入口"的那一个里加 ccflags -D（避免重复宏定义）
+                  if [ "$FIRST_DONE" -eq 0 ]; then
+                    if ! grep -qE 'ccflags-[a-z]*\s*\+?=' "$f"; then
+                      echo "ccflags-y := -DKSU_VERSION=${KSU_TMP}" >> "$f"
+                    else
+                      # 已经有 ccflags-y/ccflags-xxx +=/:= 了，且上一步已经把 -DKSU_VERSION=xxx 全删掉，
+                      # 所以这里可以直接在第一条 ccflags-y := 行后面追加
+                      perl -i -0777 -pe 's/(^|\n)([ \t]*ccflags-[a-zA-Z]*[ \t]*\+?:=[^\n]*\n)/$1$2ccflags-y += -DKSU_VERSION='"${KSU_TMP}"'\n/s' "$f"
+                    fi
+                    FIRST_DONE=1
+                  fi
+                fi
+              done
               ;;
             *)
               if [ -z "$LEGACY_SUKISU_CONFIG" ]; then
