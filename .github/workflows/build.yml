@@ -1551,7 +1551,7 @@ jobs:
           sed -i 's/check_defconfig//' ./common/build.config.gki
 
       - name: 添加 SUSFS 配置
-        if: inputs.enable_susfs
+        if: inputs.enable_susfs && (inputs.ksu_variant == 'ReSukiSU' || inputs.ksu_variant == 'ReSukiSU(34943)' || inputs.ksu_variant == 'Official' || inputs.ksu_variant == 'Next')
         run: |
           cat >> "$DEFCONFIG" << 'EOF'
           CONFIG_KSU_SUSFS=y
