@@ -218,44 +218,68 @@ jobs:
               ;;
             "SukiSU(40548)") LEGACY_RELEASE_TAG="v2.0.0-r34"; LEGACY_DIR="SukiSU_40548" ;;
             "ReSukiSU(34943)")
-              # 从社区 CI 镜像 cctv18/ReSukiSU_CI 精确下载 v34943 的稳定 APK
               echo "下载 ReSukiSU(34943) 管理器..."
-              mkdir -p "manager-artifacts/ReSukiSU_34943"
-              TARGET="v34943"
               FALLBACK_TAG="ReSukiSU_27019748382"
               FALLBACK_URL="https://github.com/cctv18/ReSukiSU_CI/releases/download/${FALLBACK_TAG}/ReSukiSU_v4.1.0_34943-arm64-v8a-release.apk"
-              MANAGER_URL=""
-              for PAGE in 1 2 3 4 5 6 7 8; do
-                RELEASES=$(curl -fsSL "https://api.github.com/repos/cctv18/ReSukiSU_CI/releases?per_page=30&page=$PAGE" || true)
-                if [ -z "$RELEASES" ]; then continue; fi
-                CANDIDATE=$(printf '%s' "$RELEASES" | jq -r --arg T "$TARGET" '
-                  [.[] | select(.name == $T)] |
-                  .[0] // empty
-                ' 2>/dev/null)
-                if [ -n "$CANDIDATE" ]; then
-                  MANAGER_URL=$(printf '%s' "$CANDIDATE" | jq -r '
-                    .assets[]? |
-                    select(.name | test("ReSukiSU_v4\\.1\\.0_34943-arm64-v8a-release\\.apk$")) |
-                    .browser_download_url
-                  ' 2>/dev/null | head -n 1)
+              REPO="cctv18/ReSukiSU_CI"
+              FILENAME="ReSukiSU CI构建.yml"
+              TARGET_KSU_VERSION=34943
+              DOWNLOADED=false
+
+              echo "尝试从 $REPO 的 CI $FILENAME 构建历史中获取多管理器变体..."
+              for PAGE in $(seq 1 8); do
+                RUNS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                  "https://api.github.com/repos/$REPO/actions/workflows?per_page=100" || true)
+                WORKFLOW_ID=$(printf '%s' "$RUNS" | jq -r '.workflows[]? | select(.name | ascii_downcase | contains("构建") or ascii_downcase | contains("build") or ascii_downcase | contains("ci")) | .id' 2>/dev/null | head -n 1)
+                if [ -z "$WORKFLOW_ID" ] || [ "$WORKFLOW_ID" = "null" ]; then
                   break
                 fi
-                # 如果这页最大版本号已经 < 目标版本，没必要再翻下一页（release 按时间倒序）
-                MAX_ON_PAGE=$(printf '%s' "$RELEASES" | jq -r '
-                  [.[] | select(.name | test("^v3[0-9]{4}$"))] |
-                  [.[] | (.name | ltrimstr("v") | tonumber)] |
-                  max // 0
-                ' 2>/dev/null)
-                if [ -n "$MAX_ON_PAGE" ] && [ "$MAX_ON_PAGE" -lt 34943 ]; then
-                  break
-                fi
+                RUNS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                  "https://api.github.com/repos/$REPO/actions/workflows/$WORKFLOW_ID/runs?status=success&per_page=30&page=$PAGE" || true)
+                RUN_COUNT=$(printf '%s' "$RUNS" | jq '.workflow_runs | length' 2>/dev/null || echo 0)
+                [ "$RUN_COUNT" -eq 0 ] && break
+
+                for INDEX in $(seq 0 $((RUN_COUNT - 1))); do
+                  BUILD_ID=$(printf '%s' "$RUNS" | jq -r ".workflow_runs[$INDEX].id" 2>/dev/null)
+                  [ -z "$BUILD_ID" ] || [ "$BUILD_ID" = "null" ] && continue
+
+                  ARTIFACTS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                    "https://api.github.com/repos/$REPO/actions/runs/$BUILD_ID/artifacts" || true)
+
+                  TARGET_LIST=$(printf '%s' "$ARTIFACTS" | jq -r '
+                    .artifacts[]? | select((.name | ascii_downcase | contains("manager")) and (.name | ascii_downcase | contains("release"))) |
+                    "\(.name)\t\(.archive_download_url)"
+                  ' 2>/dev/null)
+                  [ -z "$TARGET_LIST" ] && continue
+
+                  HAS_34943=$(printf '%s' "$ARTIFACTS" | jq -r '.artifacts[]?.name' 2>/dev/null | grep -c "34943" || true)
+                  [ "$HAS_34943" -eq 0 ] && continue
+
+                  echo "  找到匹配 ReSukiSU(34943) 的 CI 构建: $BUILD_ID"
+                  echo "$TARGET_LIST" | while IFS=$'\t' read -r NAME URL; do
+                    SAFE_NAME=$(echo "$NAME" | tr '/ ' '__')
+                    echo "  下载 CI 产物: $NAME"
+                    curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o "${SAFE_NAME}.zip" "$URL" 2>/dev/null || continue
+                    mkdir -p "manager-artifacts/$SAFE_NAME"
+                    unzip -o "${SAFE_NAME}.zip" -d "manager-artifacts/$SAFE_NAME" 2>/dev/null || true
+                    rm -f "${SAFE_NAME}.zip"
+                    echo "  已安装: $NAME"
+                  done
+                  DOWNLOADED=true
+                  break 3
+                done
               done
-              if [ -z "$MANAGER_URL" ]; then
-                echo "未在 Releases 中精确匹配到 v34943 管理器 APK，使用兜底地址 ${FALLBACK_TAG}"
-                MANAGER_URL="$FALLBACK_URL"
+
+              if [ "$DOWNLOADED" = false ]; then
+                echo "未找到 ReSukiSU(34943) 多管理器 CI 产物，使用兜底 release APK..."
+                mkdir -p "manager-artifacts/ReSukiSU_34943"
+                curl -fL -o "manager-artifacts/ReSukiSU_34943/ReSukiSU_34943-arm64-v8a-release.apk" "$FALLBACK_URL" || true
               fi
-              curl -fL -o "manager-artifacts/ReSukiSU_34943/ReSukiSU_34943-arm64-v8a-release.apk" "$MANAGER_URL" \
-                || curl -fL -o "manager-artifacts/ReSukiSU_34943/ReSukiSU_34943-arm64-v8a-release.apk" "$FALLBACK_URL"
+
+              echo "仅保留 ReSukiSU arm64-v8a release 管理器..."
+              find manager-artifacts -type f -name "*.apk" ! -name "*-arm64-v8a-release.apk" ! -name "*Spoofed*release*" -delete 2>/dev/null || true
+              find manager-artifacts -type f -name "*debug*.apk" -delete 2>/dev/null || true
+              find manager-artifacts -type f -name "*.apk" -print
               echo "kversion=34943" >> $GITHUB_OUTPUT
               exit 0
               ;;
@@ -428,11 +452,28 @@ jobs:
         run: |
           case "${{ inputs.kernelsu_variant }}" in
             "SukiSU(40726)")
-              # SukiSU-Ultra v4.1.3 自带 SUSFS，无需额外下载
-              echo "SukiSU(40726) 使用 SukiSU-Ultra v4.1.3 内置 SUSFS 支持"
-              echo "SUSFS_NAME=v2.1.0-builtin" >> $GITHUB_ENV
-              mkdir -p susfs-module
-              echo "placeholder" > susfs-module/ksu_module_susfs.zip
+              echo "下载 SukiSU 对应的 SUSFS 模块..."
+              echo "SUSFS_NAME=release-1.5.2+_4163b1a" >> $GITHUB_ENV
+              BUILD_ID=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/workflows/build.yml/runs?status=success" |
+                jq -r '.workflow_runs[0].id')
+              ARTIFACTS=$(curl -s -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" \
+                "https://api.github.com/repos/sidex15/susfs4ksu-module/actions/runs/$BUILD_ID/artifacts")
+              DOWNLOAD_URL=$(echo "$ARTIFACTS" | jq -r '.artifacts[0].archive_download_url')
+              NAME=$(echo "$ARTIFACTS" | jq -r '.artifacts[0].name')
+              echo $DOWNLOAD_URL
+              mkdir -p susfs-temp susfs-module
+              curl -L -H "Authorization: token ${{ secrets.GITHUB_TOKEN }}" -o "susfs-temp.zip" "$DOWNLOAD_URL"
+              unzip "susfs-temp.zip" -d susfs-temp
+              cd susfs-temp
+              if ls *.zip 1>/dev/null 2>&1; then
+                mv *.zip ../susfs-module/ksu_module_susfs.zip
+              else
+                zip -r "../susfs-module/ksu_module_susfs.zip" .
+              fi
+              cd ..
+              rm -rf susfs-temp susfs-temp.zip
+              echo "SUSFS 模块下载完成"
               exit 0
               ;;
             "SukiSU(40548)") LEGACY_RELEASE_TAG="v2.0.0-r34"; LEGACY_SUSFS_VERSION="v2.0.0" ;;
